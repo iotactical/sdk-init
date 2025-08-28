@@ -1,0 +1,132 @@
+name: Build and Notify Defense Builders SDK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: iotactical/dbsdk-{{name}}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.image.outputs.image }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Determine version
+        id: version
+        run: |
+          if [ -f VERSION.txt ]; then
+            VERSION=$(cat VERSION.txt | tr -d '\n\r')
+          else
+            VERSION="0.0.0"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+          
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          
+      - name: Set image output
+        id: image
+        run: |
+          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
+          
+      - name: Make container public
+        run: |
+          # Make the container package public for community access
+          curl -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/orgs/{{organization}}/packages/container/dbsdk-{{name}} \
+            -d '{"visibility":"public"}' || echo "Failed to make package public - may need manual intervention"
+          
+  notify-defense-builders:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      {{#if javaVersion}}
+      - name: Determine build versions
+        id: build-info
+        run: |
+          echo "java_version={{javaVersion}}" >> $GITHUB_OUTPUT
+          echo "gradle_version={{gradleVersion}}" >> $GITHUB_OUTPUT
+          {{#if androidApi}}echo "android_api={{androidApi}}" >> $GITHUB_OUTPUT{{/if}}
+      {{/if}}
+      {{#if dotnetVersion}}
+      - name: Determine build versions
+        id: build-info
+        run: |
+          echo "dotnet_version={{dotnetVersion}}" >> $GITHUB_OUTPUT
+      {{/if}}
+      {{#if nodeVersion}}
+      - name: Determine build versions
+        id: build-info
+        run: |
+          echo "node_version={{nodeVersion}}" >> $GITHUB_OUTPUT
+      {{/if}}
+          
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          NOTES="Automated build of {{displayName}} version ${{ needs.build.outputs.version }} from commit ${{ github.sha }}"
+          echo "release_notes=$NOTES" >> $GITHUB_OUTPUT
+          
+      - name: Notify Defense Builders SDK
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.DEFENSE_BUILDERS_PAT }}
+          repository: iotactical/defense-builders-sdk
+          event-type: sdk-update
+          client-payload: |
+            {
+              "sdk_name": "{{name}}",
+              "version": "${{ needs.build.outputs.version }}",
+              "container_image": "${{ needs.build.outputs.image }}",
+              {{#if javaVersion}}"java_version": "${{ steps.build-info.outputs.java_version }}",{{/if}}
+              {{#if gradleVersion}}"gradle_version": "${{ steps.build-info.outputs.gradle_version }}",{{/if}}
+              {{#if androidApi}}"android_api": "${{ steps.build-info.outputs.android_api }}",{{/if}}
+              {{#if dotnetVersion}}"dotnet_version": "${{ steps.build-info.outputs.dotnet_version }}",{{/if}}
+              {{#if nodeVersion}}"node_version": "${{ steps.build-info.outputs.node_version }}",{{/if}}
+              "release_notes": "${{ steps.release-notes.outputs.release_notes }}",
+              "is_latest": true
+            }

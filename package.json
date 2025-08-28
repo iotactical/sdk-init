@@ -1,0 +1,57 @@
+{
+  "name": "@iotactical/sdk-init",
+  "version": "1.0.0",
+  "description": "Defense Builders SDK Collection Automation Tool",
+  "main": "cli/sdk-init",
+  "bin": {
+    "sdk-init": "cli/sdk-init"
+  },
+  "scripts": {
+    "test": "jest",
+    "lint": "eslint cli/ automation/ validation/",
+    "validate": "node cli/sdk-init validate",
+    "build": "echo 'Build completed'",
+    "install-global": "npm install -g ."
+  },
+  "keywords": [
+    "sdk",
+    "automation",
+    "defense-builders",
+    "tak",
+    "atak",
+    "wintak",
+    "cli"
+  ],
+  "author": "ioTACTICAL",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iotactical/sdk-init.git"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "inquirer": "^9.2.0",
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.1.0",
+    "handlebars": "^4.7.8",
+    "yaml": "^2.3.0",
+    "semver": "^7.5.0",
+    "glob": "^10.3.0",
+    "ajv": "^8.12.0",
+    "@octokit/rest": "^20.0.0",
+    "simple-git": "^3.19.0"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "eslint": "^8.42.0",
+    "eslint-config-standard": "^17.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ]
+}

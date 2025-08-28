@@ -1,0 +1,307 @@
+name: Build SDK and Register with Defense Builders
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: iotactical/dbsdk-{{name}}
+  GIST_NAME: sdk-versions-{{name}}.json
+
+jobs:
+  discover-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.discover.outputs.versions }}
+      sdk_versions_json: ${{ steps.generate-json.outputs.sdk_versions_json }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Discover SDK versions from directory structure
+        id: discover
+        run: |
+          # Find all SDK version directories
+          versions=()
+          
+          {{#if (eq type 'mobile-android')}}
+          # Look for {{displayName}}-*-SDK directories and extract version from directory name
+          for dir in {{displayName}}-*-SDK/; do
+            if [[ -d "$dir" ]]; then
+              # Extract version from directory name (e.g., ATAK-CIV-5.5.0.5-SDK -> 5.5.0.5)
+              version=$(echo "$dir" | sed 's/{{displayName}}-\(.*\)-SDK\//\1/')
+              if [[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                versions+=("$version")
+                echo "Found version: $version in $dir"
+              else
+                echo "Skipping invalid version format: $version in $dir"
+              fi
+            fi
+          done
+          {{else}}
+          # Look for version-named directories or VERSION.txt files
+          if [[ -f "VERSION.txt" ]]; then
+            version=$(cat VERSION.txt | tr -d '\n\r' | head -1)
+            versions+=("$version")
+            echo "Found version: $version from VERSION.txt"
+          fi
+          
+          # Also check for versioned directories
+          for dir in v*/; do
+            if [[ -d "$dir" ]]; then
+              version=${dir%/}
+              version=${version#v}
+              if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                versions+=("$version")
+                echo "Found version: $version in $dir"
+              fi
+            fi
+          done
+          {{/if}}
+          
+          # Remove duplicates and sort
+          if [[ ${#versions[@]} -gt 0 ]]; then
+            sorted_versions=($(printf '%s\n' "${versions[@]}" | sort -uV))
+            versions_json=$(printf '%s\n' "${sorted_versions[@]}" | jq -R . | jq -s .)
+            echo "versions=$versions_json" >> $GITHUB_OUTPUT
+            echo "Discovered versions: $versions_json"
+          else
+            echo "::error::No SDK versions found in directory structure"
+            exit 1
+          fi
+          
+      - name: Generate sdk-versions.json
+        id: generate-json
+        run: |
+          versions='${{ steps.discover.outputs.versions }}'
+          
+          # Determine latest version (highest semver)
+          latest_version=$(echo "$versions" | jq -r '.[]' | sort -V | tail -1)
+          echo "Latest version: $latest_version"
+          
+          # Generate SDK versions JSON
+          cat > sdk-versions.json << 'EOF'
+          {
+            "{{name}}": {
+              "name": "{{displayName}} SDK",
+              "description": "{{description}}",
+              "versions": [
+          EOF
+          
+          # Add each version
+          echo "$versions" | jq -r '.[]' | while IFS= read -r version; do
+            is_latest="false"
+            if [[ "$version" == "$latest_version" ]]; then
+              is_latest="true"
+            fi
+            
+            cat >> sdk-versions.json << EOF
+                {
+                  "version": "$version",
+                  "label": "$version$([ "$is_latest" = "true" ] && echo " (Latest)" || echo "")",
+                  "container": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$version",
+                  {{#if javaVersion}}"java_version": "{{javaVersion}}",{{/if}}
+                  {{#if gradleVersion}}"gradle_version": "{{gradleVersion}}",{{/if}}
+                  {{#if androidApi}}"android_api": "{{androidApi}}",{{/if}}
+                  {{#if dotnetVersion}}"dotnet_version": "{{dotnetVersion}}",{{/if}}
+                  {{#if nodeVersion}}"node_version": "{{nodeVersion}}",{{/if}}
+                  "is_latest": $is_latest,
+                  "release_notes": "SDK version $version built from commit ${{ github.sha }}"
+                }$([ "$version" != "$latest_version" ] && echo "," || echo "")
+          EOF
+          done
+          
+          # Close versions array and add templates
+          cat >> sdk-versions.json << 'EOF'
+              ],
+              "templates": [
+                {
+                  "id": "basic",
+                  "name": "Basic Plugin",
+                  "description": "Simple {{displayName}} plugin with basic functionality"
+                },
+                {
+                  "id": "advanced", 
+                  "name": "Advanced Plugin",
+                  "description": "Complex plugin with UI components and advanced features"
+                },
+                {
+                  "id": "custom",
+                  "name": "Custom Template",
+                  "description": "Minimal setup for experienced developers"
+                }
+              ]
+            }
+          }
+          EOF
+          
+          # Validate JSON syntax
+          if ! jq empty sdk-versions.json; then
+            echo "::error::Generated JSON is invalid"
+            cat sdk-versions.json
+            exit 1
+          fi
+          
+          echo "Generated valid sdk-versions.json"
+          echo "sdk_versions_json<<EOF" >> $GITHUB_OUTPUT
+          cat sdk-versions.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  validate-registry:
+    needs: discover-versions
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout defense-builders-sdk for schema
+        uses: actions/checkout@v4
+        with:
+          repository: iotactical/defense-builders-sdk
+          path: defense-builders-sdk
+          
+      - name: Setup Node.js for validation
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install validation tools
+        run: npm install -g ajv-cli
+        
+      - name: Write generated JSON to file
+        run: |
+          echo '${{ needs.discover-versions.outputs.sdk_versions_json }}' > sdk-versions.json
+          
+      - name: Validate against schema
+        run: |
+          ajv validate -s defense-builders-sdk/schema/sdk-versions-schema.json -d sdk-versions.json
+          echo "✅ SDK registry JSON is valid"
+
+  build-containers:
+    needs: discover-versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.discover-versions.outputs.versions) }}
+        
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ matrix.version }}
+            type=raw,value=latest,enable=${{ matrix.version == fromJSON(needs.discover-versions.outputs.versions)[0] }}
+            
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SDK_VERSION=${{ matrix.version }}
+            BUILD_DATE=${{ github.run_number }}
+            GIT_SHA=${{ github.sha }}
+          
+      - name: Make container public
+        run: |
+          # Make the container package public for community access
+          curl -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/orgs/{{organization}}/packages/container/dbsdk-{{name}} \
+            -d '{"visibility":"public"}' || echo "Failed to make package public - may need manual intervention"
+
+  register-with-defense-builders:
+    needs: [discover-versions, validate-registry, build-containers]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Update SDK registry gist
+        run: |
+          # Write the JSON to a file
+          echo '${{ needs.discover-versions.outputs.sdk_versions_json }}' > sdk-versions-{{name}}.json
+          
+          # Check if gist exists
+          gist_id=$(curl -s \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GIST_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/users/{{organization}}/gists" \
+            | jq -r '.[] | select(.files."${{ env.GIST_NAME }}" != null) | .id' | head -1)
+          
+          if [[ "$gist_id" != "null" && -n "$gist_id" ]]; then
+            # Update existing gist
+            echo "Updating existing gist: $gist_id"
+            curl -X PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GIST_TOKEN }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/gists/$gist_id" \
+              -d "{
+                \"description\": \"{{displayName}} SDK versions for Defense Builders\",
+                \"files\": {
+                  \"${{ env.GIST_NAME }}\": {
+                    \"content\": $(cat sdk-versions-{{name}}.json | jq -R -s .)
+                  }
+                }
+              }"
+          else
+            # Create new gist
+            echo "Creating new gist"
+            curl -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GIST_TOKEN }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/gists" \
+              -d "{
+                \"description\": \"{{displayName}} SDK versions for Defense Builders\",
+                \"public\": true,
+                \"files\": {
+                  \"${{ env.GIST_NAME }}\": {
+                    \"content\": $(cat sdk-versions-{{name}}.json | jq -R -s .)
+                  }
+                }
+              }"
+          fi
+          
+          echo "✅ Gist updated successfully"
+          
+      - name: Trigger Defense Builders SDK update
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GIST_TOKEN }}
+          repository: iotactical/defense-builders-sdk
+          event-type: sdk-registry-update
+          client-payload: |
+            {
+              "sdk_name": "{{name}}",
+              "gist_name": "${{ env.GIST_NAME }}",
+              "organization": "{{organization}}",
+              "repository": "${{ github.repository }}",
+              "commit_sha": "${{ github.sha }}",
+              "versions": ${{ needs.discover-versions.outputs.versions }}
+            }

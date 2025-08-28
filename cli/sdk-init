@@ -1,0 +1,161 @@
+#!/usr/bin/env node
+
+/**
+ * SDK Init - Defense Builders SDK Collection Automation
+ * Main CLI entry point
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { program } = require('commander');
+const chalk = require('chalk');
+const inquirer = require('inquirer');
+
+const CreateCommand = require('./commands/create');
+const ValidateCommand = require('./commands/validate');
+const SetupCommand = require('./commands/setup');
+const InteractiveCommand = require('./commands/interactive');
+
+const packageInfo = require('../package.json');
+
+// Configure main program
+program
+  .name('sdk-init')
+  .description('Defense Builders SDK Collection Automation Tool')
+  .version(packageInfo.version)
+  .option('-v, --verbose', 'Enable verbose logging')
+  .option('--dry-run', 'Show what would be done without making changes');
+
+// Global error handler
+program.exitOverride();
+
+// Create command
+program
+  .command('create <name>')
+  .description('Create a new SDK collection repository')
+  .option('--type <type>', 'SDK type (mobile-android, desktop-windows, server, web, embedded)')
+  .option('--language <lang>', 'Primary language (java, csharp, javascript, cpp, python)')
+  .option('--description <desc>', 'SDK description')
+  .option('--container-base <image>', 'Base container image')
+  .option('--java-version <version>', 'Java version (if applicable)')
+  .option('--dotnet-version <version>', '.NET version (if applicable)')
+  .option('--node-version <version>', 'Node.js version (if applicable)')
+  .option('--gradle-version <version>', 'Gradle version (if applicable)')
+  .option('--android-api <level>', 'Android API level (if applicable)')
+  .option('--org <organization>', 'GitHub organization', 'iotactical')
+  .option('--private', 'Create private repository', false)
+  .option('--github-app-token <token>', 'GitHub App token for gist management')
+  .action(CreateCommand.execute);
+
+// Validate command
+program
+  .command('validate <path>')
+  .description('Validate existing SDK repository structure')
+  .option('--fix', 'Attempt to fix validation issues')
+  .option('--schema <file>', 'Custom validation schema file')
+  .action(ValidateCommand.execute);
+
+// Setup automation command  
+program
+  .command('setup-automation <repo>')
+  .description('Setup CI/CD automation for existing repository')
+  .option('--pat <token>', 'GitHub Personal Access Token')
+  .option('--force', 'Force setup even if automation exists')
+  .action(SetupCommand.execute);
+
+// Interactive mode
+program
+  .command('interactive')
+  .alias('i')
+  .description('Interactive SDK creation wizard')
+  .action(InteractiveCommand.execute);
+
+// List supported types
+program
+  .command('list-types')
+  .description('List supported SDK types and languages')
+  .action(() => {
+    const types = {
+      'mobile-android': {
+        languages: ['java', 'kotlin'],
+        description: 'Android mobile applications (ATAK-CIV style)',
+        examples: ['atak-civ']
+      },
+      'desktop-windows': {
+        languages: ['csharp', 'cpp'],
+        description: 'Windows desktop applications (WinTAK style)', 
+        examples: ['wintak']
+      },
+      'server': {
+        languages: ['java', 'javascript', 'python', 'go'],
+        description: 'Server-side applications and APIs',
+        examples: ['tak-server']
+      },
+      'web': {
+        languages: ['javascript', 'typescript'],
+        description: 'Web applications and frameworks',
+        examples: ['web-tak']
+      },
+      'embedded': {
+        languages: ['cpp', 'c', 'rust'],
+        description: 'IoT and embedded systems',
+        examples: ['hardware-tak']
+      }
+    };
+
+    console.log(chalk.blue.bold('\\n📋 Supported SDK Types:\\n'));
+    
+    Object.entries(types).forEach(([type, info]) => {
+      console.log(chalk.green.bold(`${type}:`));
+      console.log(`  Description: ${info.description}`);
+      console.log(`  Languages: ${info.languages.join(', ')}`);
+      console.log(`  Examples: ${info.examples.join(', ')}`);
+      console.log();
+    });
+  });
+
+// Version info
+program
+  .command('info')
+  .description('Show version and environment information')
+  .action(() => {
+    console.log(chalk.blue.bold('🔧 SDK Init Information\\n'));
+    console.log(`Version: ${packageInfo.version}`);
+    console.log(`Node.js: ${process.version}`);
+    console.log(`Platform: ${process.platform}`);
+    console.log(`Architecture: ${process.arch}`);
+    
+    // Check for required tools
+    const { execSync } = require('child_process');
+    const tools = ['gh', 'git', 'docker'];
+    
+    console.log('\\n📦 Required Tools:');
+    tools.forEach(tool => {
+      try {
+        const version = execSync(`${tool} --version`, { encoding: 'utf8' }).split('\\n')[0];
+        console.log(chalk.green(`  ✓ ${tool}: ${version}`));
+      } catch (error) {
+        console.log(chalk.red(`  ✗ ${tool}: Not installed`));
+      }
+    });
+    
+    console.log();
+  });
+
+// Help customization
+program.on('--help', () => {
+  console.log('\\n🚀 Examples:');
+  console.log('  $ sdk-init create wintak --type desktop-windows --language csharp');
+  console.log('  $ sdk-init validate ./my-sdk-repo');
+  console.log('  $ sdk-init setup-automation atak-civ'); 
+  console.log('  $ sdk-init interactive');
+  console.log('\\n📚 Documentation: https://github.com/iotactical/sdk-init');
+});
+
+// Parse command line arguments
+program.parse(process.argv);
+
+// Show help if no command provided
+if (!process.argv.slice(2).length) {
+  program.outputHelp();
+}
